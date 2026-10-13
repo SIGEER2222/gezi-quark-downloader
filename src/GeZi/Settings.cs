@@ -126,6 +126,23 @@ namespace GeZi
         ///    系统是深色则界面跟着变深，正是"跟随系统"该有的行为。
         /// </summary>
         public AppTheme Theme { get; set; } = AppTheme.System;
+
+        // ---------------- 本地 HTTP API（供脚本 / AI 代理调用） ----------------
+
+        /// <summary>
+        /// 是否启动本地 API 服务（只绑 127.0.0.1，配 token 鉴权）。
+        /// 关掉 = 完全不监听端口。
+        /// </summary>
+        public bool ApiEnabled { get; set; } = true;
+
+        /// <summary>API 监听端口（回环地址）。被占时会自动顺延 +1…+9。</summary>
+        public int ApiPort { get; set; } = 17890;
+
+        /// <summary>
+        /// API 鉴权 token。留空时启动会自动生成一个随机值并写回配置 ——
+        /// 本机脚本/AI 从 GeZi.config.xml 读它即可，不需要人工配置。
+        /// </summary>
+        public string ApiToken { get; set; } = "";
     }
 
     /// <summary>主窗口「关闭」按钮的行为。</summary>
@@ -236,6 +253,8 @@ namespace GeZi
             if (s.Threads > GeZi.Core.Download.SegmentedDownloader.MaxRealConcurrency)
                 s.Threads = GeZi.Core.Download.SegmentedDownloader.MaxRealConcurrency;
             if (s.ConcurrentTasks <= 0) s.ConcurrentTasks = 3;
+            // API 端口兜底：老配置没有该字段、或手改出非法值时回到默认。
+            if (s.ApiPort <= 0 || s.ApiPort > 65535) s.ApiPort = 17890;
             return s;
         }
 

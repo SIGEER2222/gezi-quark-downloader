@@ -111,7 +111,14 @@ namespace GeZi
             bool createdNew;
             try
             {
-                _instanceMutex = new Mutex(true, "GeZi_SingleInstance_Mutex_v1", out createdNew);
+                // GEZI_INSTANCE_KEY：开发/调试用多开开关。设了不同的 key 就各自成独立实例
+                // （各自持有下载任务，⚠️ 不要用它同时跑真实下载 —— 同路径互斥是进程内的）。
+                // 主要用途：在本机已有一个正常实例时，另起一个实例测试新功能（如本地 API）。
+                string mutexName = "GeZi_SingleInstance_Mutex_v1";
+                var instKey = Environment.GetEnvironmentVariable("GEZI_INSTANCE_KEY");
+                if (!string.IsNullOrWhiteSpace(instKey))
+                    mutexName += "_" + instKey.Trim();
+                _instanceMutex = new Mutex(true, mutexName, out createdNew);
             }
             catch
             {

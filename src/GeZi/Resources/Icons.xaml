@@ -55,6 +55,8 @@
 
     <!-- 返回上级 -->
     <Geometry x:Key="IconArrowUp">M12,19 V5 M6,11 L12,5 L18,11</Geometry>
+    <Geometry x:Key="IconArrowLeft">M19,12 H5 M11,6 L5,12 L11,18</Geometry>
+    <Geometry x:Key="IconArrowRight">M5,12 H19 M13,6 L19,12 L13,18</Geometry>
 
     <!-- 关闭 -->
     <Geometry x:Key="IconClose">M6,6 L18,18 M18,6 L6,18</Geometry>

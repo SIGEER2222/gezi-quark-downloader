@@ -85,7 +85,8 @@
                  分隔方式改为「底色差」：侧栏白、内容区浅灰（AppBg），
                  不再画 0,0,1,0 的 1px 硬线 —— 硬线正是"生硬"的来源。
             -->
-            <Grid Grid.Row="1">
+            <!-- 内容区自带不透明背景：Mica 模式下窗口背景是透明的，只有标题栏那条透出来 -->
+            <Grid Grid.Row="1" Background="{DynamicResource AppBgBrush}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="*"/>
@@ -595,6 +596,24 @@
                                                      ToolTip="按名称筛选当前目录的文件/文件夹"/>
                                         </Grid>
                                     </Border>
+                                    <Button x:Name="NavBackBtn" Click="OnNavBack" Style="{StaticResource ToolButton}"
+                                            IsEnabled="False" ToolTip="后退到上一个浏览过的目录">
+                                        <Path Data="{StaticResource IconArrowLeft}" Stretch="Uniform"
+                                              Width="13" Height="13" VerticalAlignment="Center"
+                                              Stroke="{DynamicResource TextSecondaryBrush}"
+                                              StrokeThickness="2"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              StrokeLineJoin="Round"/>
+                                    </Button>
+                                    <Button x:Name="NavFwdBtn" Click="OnNavForward" Style="{StaticResource ToolButton}"
+                                            IsEnabled="False" ToolTip="前进">
+                                        <Path Data="{StaticResource IconArrowRight}" Stretch="Uniform"
+                                              Width="13" Height="13" VerticalAlignment="Center"
+                                              Stroke="{DynamicResource TextSecondaryBrush}"
+                                              StrokeThickness="2"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              StrokeLineJoin="Round"/>
+                                    </Button>
                                     <Button x:Name="DriveUpBtn" Click="OnUp" Style="{StaticResource ToolButton}"
                                             ToolTip="返回上级目录">
                                         <StackPanel Orientation="Horizontal">
@@ -621,8 +640,43 @@
                                 </StackPanel>
                             </Grid>
 
-                            <!-- 文件列表 -->
-                            <Border Grid.Row="1" Style="{StaticResource Card}" Padding="0">
+                            <!-- 文件列表（左：目录树侧栏，仅「我的网盘」模式可见） -->
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="230"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="DriveTreeBox" Grid.Column="0" Style="{StaticResource Card}"
+                                        Padding="6,8" Visibility="Collapsed">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Text="文件夹" Margin="8,2,0,6"
+                                                   Style="{StaticResource TertiaryText}"/>
+                                        <TreeView x:Name="DriveTree" Grid.Row="1" BorderThickness="0"
+                                                  Background="Transparent"
+                                                  ItemContainerStyle="{StaticResource DriveTreeItem}">
+                                            <TreeView.ItemTemplate>
+                                                <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Path Data="{StaticResource IconFolder}" Stretch="Uniform"
+                                                              Width="13" Height="13" VerticalAlignment="Center"
+                                                              Margin="0,0,7,0" StrokeThickness="1.6"
+                                                              Stroke="{DynamicResource WarningBrush}"
+                                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                              StrokeLineJoin="Round"/>
+                                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                                                                   TextTrimming="CharacterEllipsis" MaxWidth="140"/>
+                                                    </StackPanel>
+                                                </HierarchicalDataTemplate>
+                                            </TreeView.ItemTemplate>
+                                        </TreeView>
+                                    </Grid>
+                                </Border>
+                                <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
                                 <Grid>
                                     <!-- ⚠️ SelectionMode=Extended 本来 Shift+点击 = **连选**（整段区间）。
                                          用户要求「可以使用 shift 多选，但不是连选」——
@@ -752,7 +806,8 @@
                                                    Style="{StaticResource TertiaryText}" FontSize="11"/>
                                     </StackPanel>
                                 </Grid>
-                            </Border>
+                                </Border>
+                            </Grid>
                         </Grid>
 
                         <!-- 操作按钮 -->
@@ -1398,6 +1453,40 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
+
+                            <!-- ========== 本地 API（脚本/AI 调用入口） ========== -->
+                            <Border Style="{StaticResource MutedCard}" Margin="0,0,0,14">
+                                <StackPanel>
+                                    <TextBlock Text="本地 API（供脚本 / AI 调用）" Style="{StaticResource CardTitleText}"
+                                               Margin="0,0,0,10"/>
+                                    <CheckBox x:Name="ApiEnableCheck"
+                                              Content="启用本地 API（只监听 127.0.0.1，需 token 鉴权）"
+                                              Style="{StaticResource AppCheckBox}"
+                                              Click="OnSettingChanged" Margin="0,0,0,10"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="端口" Style="{StaticResource BodyText}"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBox x:Name="ApiPortBox" Grid.Column="1"
+                                                 Style="{StaticResource AppTextBox}" Height="34"
+                                                 LostFocus="OnSettingChanged" KeyDown="OnSettingKeyDown"
+                                                 ToolTip="HTTP API 监听端口；被占用时自动顺延 +1…+9。"/>
+                                        <TextBlock Grid.Column="2" Text="Token" Style="{StaticResource BodyText}"
+                                                   VerticalAlignment="Center" Margin="16,0,8,0"/>
+                                        <TextBox x:Name="ApiTokenBox" Grid.Column="3"
+                                                 Style="{StaticResource AppTextBox}" Height="34"
+                                                 LostFocus="OnSettingChanged" KeyDown="OnSettingKeyDown"
+                                                 ToolTip="调用时带 Authorization: Bearer &lt;token&gt;。留空后保存会自动生成随机值。"/>
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource ProseText}" Margin="0,8,0,0"
+                                               Text="端点：POST /api/resolve、/api/list、/api/download、/api/links，GET /api/tasks、/api/status、/api/pending、/api/history、/api/log，POST /api/tasks/control、/api/pending/resume。只绑回环地址，外网摸不到。"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

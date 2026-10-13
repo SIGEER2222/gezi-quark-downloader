@@ -117,6 +117,27 @@ namespace GeZi
             catch { }
         }
 
+        /// <summary>
+        /// DWMWA_SYSTEMBACKDROP_TYPE = Mica 背景（Win11 22H2+）。
+        /// 成功返回 true —— 调用方随后要把窗口背景/标题栏改成透明，Mica 才透得出来；
+        /// Win10 / 旧 Win11 返回 false，调用方保持原不透明外观即可。
+        /// </summary>
+        public static bool ApplyMicaBackdrop(Window w)
+        {
+            try
+            {
+                if (w == null) return false;
+                var h = new WindowInteropHelper(w).Handle;
+                if (h == IntPtr.Zero) return false;
+
+                const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
+                const int DWMSBT_MAINWINDOW = 2;   // Mica
+                int v = DWMSBT_MAINWINDOW;
+                return DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE, ref v, sizeof(int)) == 0;
+            }
+            catch { return false; }
+        }
+
         private static T Res<T>(string key, T fallback) where T : class
         {
             try

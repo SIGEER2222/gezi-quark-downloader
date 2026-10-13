@@ -90,7 +90,22 @@ namespace GeZi
             public List<string> PathList = new List<string>();
             public string PwdId;
             public string Stoken;
+            public List<NavPoint> HistBack = new List<NavPoint>();
+            public List<NavPoint> HistFwd = new List<NavPoint>();
         }
+
+        /// <summary>前进/后退历史里的一个浏览位置（完整导航状态快照，不含文件列表）。</summary>
+        private sealed class NavPoint
+        {
+            public string CurFid;
+            public List<string> Path;
+            public List<string> FidStackRev;   // 与 Stack.ToList() 同序：栈顶在前
+        }
+
+        // 前进/后退历史（资源管理器式）。每次"主动导航"前把当前位置压入 _histBack，
+        // 并清空 _histFwd；后退/前进则在两个表之间搬移当前位置而不产生新记录。
+        private readonly List<NavPoint> _histBack = new List<NavPoint>();
+        private readonly List<NavPoint> _histFwd = new List<NavPoint>();
 
         /// <summary>「分享」模式与「我的网盘」模式各自的导航快照。</summary>
         private readonly NavSnapshot _shareNav = new NavSnapshot();
@@ -161,6 +176,7 @@ namespace GeZi
             };
             TaskList.ItemsSource = _tasks;
             ShareModeRadio.IsChecked = true;
+            InitDriveTree();
 
             // 侧栏导航（ListBox）与内容区（TabControl）的初始对齐。
             // 顺序很重要：先建好账号卡初始态，再让选中项落到第 0 页 —— 这样
@@ -270,6 +286,10 @@ namespace GeZi
             _scheduler.Diagnostics = OnDiagnostics;
             LoadSettingsToUi();
 
+            // 本地 HTTP API（给脚本/AI 调用）：只绑回环地址 + token 鉴权，
+            // 启动失败只记日志不影响主界面（服务是附属能力）。
+            StartApiServer();
+
             // 加载完成后再提示未完成任务（此时窗口已就绪，弹窗才有 Owner）
             Loaded += (s, e) =>
             {
@@ -303,6 +323,22 @@ namespace GeZi
                 // `WindowInteropHelper.Handle` 是 IntPtr.Zero → 函数静默返回，
                 // 表现为"加了代码但窗口依然没有圆角"（连日志都没打）。
                 ApplyWindowRoundedCorners();
+
+                // Mica 标题栏（Win11 22H2+）：DWM 在窗口身后画 Mica 材质，
+                // 我们把窗口背景与自绘标题栏改透明，让材质透出来；系统不支持则一切照旧。
+                if (DialogChrome.ApplyMicaBackdrop(this))
+                {
+                    var wc = System.Windows.Shell.WindowChrome.GetWindowChrome(this);
+                    if (wc != null) wc.GlassFrameThickness = new Thickness(-1);
+                    Background = System.Windows.Media.Brushes.Transparent;
+                    TitleBar.Background = System.Windows.Media.Brushes.Transparent;
+
+                    // Mica 的明暗基调跟着"沉浸深色"属性走 → 与主题切换联动
+                    DialogChrome.ApplyDarkTitleBar(this, ThemeManager.IsDarkEffective);
+                    Action<bool> darkHook = dark => DialogChrome.ApplyDarkTitleBar(this, dark);
+                    ThemeManager.ThemeChanged += darkHook;
+                    Closed += (s2, e2) => ThemeManager.ThemeChanged -= darkHook;
+                }
 
                 // 托盘图标（用户要求加后台功能）。
                 // ⚠️ 也必须在 Loaded 里：NotifyIcon 需要一个窗口句柄来收任务栏消息，
@@ -389,6 +425,7 @@ namespace GeZi
             //    鼠标划过去才消失（最经典的托盘 bug）。
             try { _tray?.Dispose(); _tray = null; } catch { }
             try { _mini?.Shutdown(); } catch { }
+            try { StopApiServer(); } catch { }
             base.OnClosed(e);
         }
 
@@ -397,6 +434,14 @@ namespace GeZi
         /// <summary>待刷入 LogBox 的日志行（跨线程入队，UI 定时器出队）。</summary>
         private readonly System.Collections.Concurrent.ConcurrentQueue<string> _logQueue =
             new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        /// <summary>
+        /// 日志环形缓冲（最近 500 行），供本地 API 的 /api/log 端点读取 ——
+        /// AI/脚本拿不到 LogBox 里的内容，得有一条程序化的日志出口。
+        /// </summary>
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _logTail =
+            new System.Collections.Concurrent.ConcurrentQueue<string>();
+        private const int LogTailMax = 500;
 
         /// <summary>日志攒批刷新器。见 <see cref="Log"/> 的注释。</summary>
         private System.Windows.Threading.DispatcherTimer _logFlushTimer;
@@ -439,7 +484,11 @@ namespace GeZi
         {
             try
             {
-                _logQueue.Enqueue(DateTime.Now.ToString("HH:mm:ss") + "  " + msg);
+                var line = DateTime.Now.ToString("HH:mm:ss") + "  " + msg;
+                _logQueue.Enqueue(line);
+                _logTail.Enqueue(line);
+                while (_logTail.Count > LogTailMax)
+                    _logTail.TryDequeue(out _);
             }
             catch { }
         }
@@ -677,6 +726,8 @@ namespace GeZi
 
             bool nowShare = ShareMode;
             SharePanel.Visibility = nowShare ? Visibility.Visible : Visibility.Collapsed;
+            // 目录树只在「我的网盘」模式出现（分享模式的根不是网盘根，树无意义）
+            DriveTreeBox.Visibility = nowShare ? Visibility.Collapsed : Visibility.Visible;
 
             // ① 先把**离开的那个模式**的导航状态存下来
             CaptureNav(nowShare ? _driveNav : _shareNav);
@@ -717,6 +768,8 @@ namespace GeZi
             into.PathList = _pathList.ToList();
             into.PwdId = _pwdId;
             into.Stoken = _stoken;
+            into.HistBack = _histBack.ToList();
+            into.HistFwd = _histFwd.ToList();
         }
 
         /// <summary>把快照还原成当前导航状态（含分享的 pwd_id / stoken）。</summary>
@@ -739,8 +792,14 @@ namespace GeZi
             _pwdId = s.PwdId;
             _stoken = s.Stoken;
 
+            _histBack.Clear();
+            _histBack.AddRange(s.HistBack);
+            _histFwd.Clear();
+            _histFwd.AddRange(s.HistFwd);
+
             UpdatePathText();
             UpdateEmptyStates();
+            UpdateNavButtons();
         }
 
         private void ResetNav()
@@ -749,7 +808,185 @@ namespace GeZi
             _fidStack.Clear();
             _pathList.Clear();
             _curFid = "0";
+            _histBack.Clear();
+            _histFwd.Clear();
             UpdatePathText();
+            UpdateNavButtons();
+        }
+
+        // ---------------- 前进 / 后退 ----------------
+
+        private NavPoint SnapshotPoint() => new NavPoint
+        {
+            CurFid = _curFid,
+            Path = _pathList.ToList(),
+            FidStackRev = _fidStack.ToList(),
+        };
+
+        private void RestorePoint(NavPoint p)
+        {
+            _curFid = p.CurFid ?? "0";
+            _pathList.Clear();
+            _pathList.AddRange(p.Path);
+            _fidStack.Clear();
+            for (int i = p.FidStackRev.Count - 1; i >= 0; i--)
+                _fidStack.Push(p.FidStackRev[i]);
+            UpdatePathText();
+        }
+
+        /// <summary>在每次"主动导航"（进入目录 / 上级 / 点树）改状态之前调用。</summary>
+        private void RecordHistory()
+        {
+            _histBack.Add(SnapshotPoint());
+            _histFwd.Clear();
+            UpdateNavButtons();
+        }
+
+        private void UpdateNavButtons()
+        {
+            if (NavBackBtn != null) NavBackBtn.IsEnabled = _histBack.Count > 0;
+            if (NavFwdBtn != null) NavFwdBtn.IsEnabled = _histFwd.Count > 0;
+        }
+
+        private async void OnNavBack(object sender, RoutedEventArgs e)
+        {
+            if (_histBack.Count == 0) return;
+            _histFwd.Add(SnapshotPoint());
+            var p = _histBack[_histBack.Count - 1];
+            _histBack.RemoveAt(_histBack.Count - 1);
+            RestorePoint(p);
+            UpdateNavButtons();
+            await LoadDirAsync(_curFid);
+            SyncTreeSelection();
+        }
+
+        private async void OnNavForward(object sender, RoutedEventArgs e)
+        {
+            if (_histFwd.Count == 0) return;
+            _histBack.Add(SnapshotPoint());
+            var p = _histFwd[_histFwd.Count - 1];
+            _histFwd.RemoveAt(_histFwd.Count - 1);
+            RestorePoint(p);
+            UpdateNavButtons();
+            await LoadDirAsync(_curFid);
+            SyncTreeSelection();
+        }
+
+        // ---------------- 目录树侧栏（懒加载，仅「我的网盘」模式） ----------------
+
+        private sealed class DirNode
+        {
+            // ⚠️ 必须是属性而不是字段：WPF 的 {Binding} 不认公共字段，
+            // 用字段时树节点文字与展开箭头全部静默失效（实测）。
+            public string Name { get; set; }
+            public string Fid { get; set; }
+            public DirNode Parent { get; set; }
+            public bool Loaded { get; set; }
+            public System.Collections.ObjectModel.ObservableCollection<DirNode> Children { get; } =
+                new System.Collections.ObjectModel.ObservableCollection<DirNode>();
+        }
+
+        private DirNode _treeRoot;
+        private bool _treeSuppress;
+
+        private void InitDriveTree()
+        {
+            _treeRoot = new DirNode { Name = "根目录", Fid = "0" };
+            // 占位子节点：让根节点先长出展开箭头，真正展开时才发请求
+            _treeRoot.Children.Add(new DirNode());
+            DriveTree.ItemsSource = new[] { _treeRoot };
+            DriveTree.AddHandler(TreeViewItem.ExpandedEvent,
+                new RoutedEventHandler(OnTreeExpanded), true);
+            DriveTree.SelectedItemChanged += OnTreeSelected;
+        }
+
+        private async void OnTreeExpanded(object sender, RoutedEventArgs e)
+        {
+            var node = (e.OriginalSource as TreeViewItem)?.DataContext as DirNode;
+            if (node == null || node.Loaded || string.IsNullOrEmpty(node.Fid)) return;
+            if (_client == null) return;
+            node.Loaded = true;
+            try
+            {
+                var items = await _client.ListDirAsync(node.Fid);
+                var dirs = items.Where(f => f.IsDir)
+                    .OrderBy(f => f.Name, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                node.Children.Clear();
+                foreach (var d in dirs)
+                {
+                    var child = new DirNode { Name = d.Name, Fid = d.Fid, Parent = node };
+                    child.Children.Add(new DirNode());   // 占位，保证有展开箭头
+                    node.Children.Add(child);
+                }
+            }
+            catch (Exception ex)
+            {
+                node.Loaded = false;   // 失败允许下次展开重试
+                Log("目录树加载失败: " + ex.Message);
+            }
+        }
+
+        private async void OnTreeSelected(object sender,
+            RoutedPropertyChangedEventArgs<object> e)
+        {
+            if (_treeSuppress) return;
+            var node = e.NewValue as DirNode;
+            if (node == null || string.IsNullOrEmpty(node.Fid) || node.Fid == _curFid) return;
+            RecordHistory();
+            var names = new List<string>();
+            var fids = new List<string>();
+            for (var p = node.Parent; p != null; p = p.Parent)
+            {
+                // 根节点不进路径名：UpdatePathText 自己会拼「根目录」前缀，
+                // 再收一次就成了「根目录/根目录」。fid 链则要含根（上级按钮要能回到它）。
+                if (p != _treeRoot) names.Insert(0, p.Name);
+                fids.Insert(0, p.Fid);
+            }
+            _pathList.Clear();
+            _pathList.AddRange(names);
+            _fidStack.Clear();
+            foreach (var f in fids) _fidStack.Push(f);   // 依次压入 → 栈顶 = 直接父级
+            _curFid = node.Fid;
+            UpdatePathText();
+            await LoadDirAsync(node.Fid);
+        }
+
+        private static DirNode FindTreeNode(DirNode from, string fid)
+        {
+            if (from.Fid == fid && !string.IsNullOrEmpty(fid)) return from;
+            foreach (var c in from.Children)
+            {
+                var r = FindTreeNode(c, fid);
+                if (r != null) return r;
+            }
+            return null;
+        }
+
+        /// <summary>列表导航后把树里对应节点展开并选中（找不到就保持原样，树是懒加载的）。</summary>
+        private void SyncTreeSelection()
+        {
+            if (DriveTree == null || _treeRoot == null || ShareMode) return;
+            var node = FindTreeNode(_treeRoot, _curFid);
+            if (node == null) return;
+            var chain = new List<DirNode>();
+            for (var p = node; p != null; p = p.Parent) chain.Insert(0, p);
+            _treeSuppress = true;
+            try
+            {
+                ItemsControl ic = DriveTree;
+                TreeViewItem tvi = null;
+                foreach (var n in chain)
+                {
+                    DriveTree.UpdateLayout();
+                    tvi = ic?.ItemContainerGenerator.ContainerFromItem(n) as TreeViewItem;
+                    if (tvi == null) { tvi = null; break; }
+                    tvi.IsExpanded = true;
+                    ic = tvi;
+                }
+                if (tvi != null) tvi.IsSelected = true;
+            }
+            finally { _treeSuppress = false; }
         }
 
         // ---------------- 分享解析 ----------------
@@ -1204,11 +1441,13 @@ namespace GeZi
             if (!BeginBusy(DriveUpBtn, "返回中")) return;
             try
             {
+                RecordHistory();
                 _curFid = _fidStack.Pop();
                 if (_pathList.Count > 0)
                     _pathList.RemoveAt(_pathList.Count - 1);
                 UpdatePathText();
                 await LoadDirAsync(_curFid);
+                SyncTreeSelection();
             }
             finally
             {
@@ -1221,11 +1460,13 @@ namespace GeZi
             var item = FileList.SelectedItem as ShareFileItem;
             if (item == null || !item.IsDir)
                 return;
+            RecordHistory();
             _fidStack.Push(_curFid);
             _curFid = item.Fid;
             _pathList.Add(item.Name);
             UpdatePathText();
             await LoadDirAsync(item.Fid);
+            SyncTreeSelection();
         }
 
         /// <summary>
@@ -1416,7 +1657,7 @@ namespace GeZi
             SetBusy(true);
             try
             {
-                var files = await CollectFilesAsync(selected, "", 0);
+                var files = await CollectFilesAsync(selected, "", 0, UiCtx());
                 if (files.Count == 0) { Log("没有可获取链接的文件"); return; }
                 if (files.Count > MaxFiles)
                 {
@@ -1426,7 +1667,7 @@ namespace GeZi
                 }
 
                 Log("共展开 " + files.Count + " 个文件，正在取直链…");
-                var items = await GetDownloadItemsAsync(files);
+                var items = await GetDownloadItemsAsync(files, UiCtx());
                 if (items == null || items.Count == 0) { Log("未取到任何直链"); return; }
 
                 var withUrl = items.Where(it => !string.IsNullOrEmpty(it.Url)).ToList();
@@ -1802,40 +2043,10 @@ namespace GeZi
         /// </summary>
         private void StartDownloadFromItems(List<DownloadItem> items)
         {
-            var alloc = AllocateThreads(items.Select(i => i.Size).ToList());
-            var jobs = new List<DownloadJob>();
-            for (int i = 0; i < items.Count; i++)
-            {
-                var it = items[i];
-                if (string.IsNullOrEmpty(it.Url)) continue;
-                string destDir = Path.Combine(_settings.OutDir, it.RelDir ?? "");
-                try { Directory.CreateDirectory(destDir); }
-                catch (Exception ex) { Log("创建下载目录失败: " + destDir + " — " + ex.Message); continue; }
-
-                string dest = PathUtil.UniquePath(Path.Combine(destDir, PathUtil.SanitizeFileName(it.Name)));
-                var item = it;
-                jobs.Add(new DownloadJob
-                {
-                    Name = item.Name, Url = item.Url, Dest = dest,
-                    Cookie = _client.CookieStr,
-                    Threads = i < alloc.Length ? alloc[i] : _settings.Threads,
-                    // 写入方式统一取设置页的全局值（原来靠下载区的「边下边播」勾选框，
-                    // 与设置页重复且容易误导，已移除该勾选框）。
-                    WriteMode = _settings.WriteMode,
-                    PartsRoot = string.IsNullOrWhiteSpace(_settings.PartsRoot) ? null : _settings.PartsRoot,
-                    LinkRefresher = ct => RefreshLinkAsync(item, ct),
-                    // 免转存（从分享直接取链）→ 续传取不到新链，失败文案别承诺"可续传"
-                    ResumeCannotRefresh = item.FromShare,
-                    Pending = new PendingInfo
-                    {
-                        PwdId = _pwdId, Stoken = _stoken, Passcode = PassBox.Text,
-                        Fid = item.Fid, Token = item.Token, FromShare = item.FromShare,
-                        RelDir = item.RelDir ?? "", Dest = dest, Size = item.Size,
-                    },
-                });
-            }
+            var items2 = items.Where(i => !string.IsNullOrEmpty(i.Url)).ToList();
+            var alloc = AllocateThreads(items2.Select(i => i.Size).ToList());
+            var jobs = BuildJobs(items2, alloc, UiCtx(), _settings.OutDir);
             if (jobs.Count == 0) { Log("没有可下载的条目。"); return; }
-
             LogAllocation(alloc);
             foreach (var job in jobs)
                 _tasks.Add(new TaskItem(job, job.Name));
@@ -1861,7 +2072,7 @@ namespace GeZi
             try
             {
                 // 把选中的文件夹递归展开成文件列表（保留相对目录）
-                var files = await CollectFilesAsync(selected, "", 0);
+                var files = await CollectFilesAsync(selected, "", 0, UiCtx());
                 if (files.Count == 0)
                 {
                     Log("没有要下载的文件");
@@ -1909,46 +2120,12 @@ namespace GeZi
                     }
                 }
 
-                var items = await GetDownloadItemsAsync(files, forceNoSave);
+                var items = await GetDownloadItemsAsync(files, UiCtx(), forceNoSave);
 
                 // 连接数按文件大小比例分配（大文件多分、小文件少分，各不低于下限）
                 var alloc = AllocateThreads(items.Select(x => x.Size).ToList());
 
-                var jobs = new List<DownloadJob>();
-                for (int i = 0; i < items.Count; i++)
-                {
-                    var it = items[i];
-                    string destDir = Path.Combine(_settings.OutDir, it.RelDir ?? "");
-                    try { Directory.CreateDirectory(destDir); }
-                    catch (Exception ex) { Log("创建下载目录失败: " + destDir + " — " + ex.Message); continue; }
-                    string dest = PathUtil.UniquePath(Path.Combine(destDir, PathUtil.SanitizeFileName(it.Name)));
-                    var item = it;   // 闭包捕获：每次循环一个新变量，避免所有回调指向同一个
-                    jobs.Add(new DownloadJob
-                    {
-                        Name = item.Name, Url = item.Url, Dest = dest,
-                        Cookie = _client.CookieStr,
-                        Threads = i < alloc.Length ? alloc[i] : _settings.Threads,
-                        // 写入方式统一取设置页的全局值（原下载区「边下边播」勾选框已移除）。
-                        WriteMode = _settings.WriteMode,
-                        // 分片根目录：留空 = 与目标同级（默认）。非空则分片集中存放，
-                        // 下载目录不被 .qparts 污染，也支持分片跨盘（如放 SSD）。
-                        PartsRoot = string.IsNullOrWhiteSpace(_settings.PartsRoot) ? null : _settings.PartsRoot,
-                        // 直链带时效签名，长任务下到一半会过期。
-                        // 给下载器一个"重新取链"的口子，它就能自动换链续传，而不是整个任务失败。
-                        LinkRefresher = ct => RefreshLinkAsync(item, ct),
-                        // 免转存（从分享直接取链）→ 续传取不到新链，失败文案别承诺"可续传"
-                        ResumeCannotRefresh = item.FromShare,
-                        // 续传上下文：写进「未完成任务」记录后，程序重启也能重取链接着下。
-                        Pending = new PendingInfo
-                        {
-                            PwdId = _pwdId, Stoken = _stoken,
-                            Passcode = PassBox.Text,   // 分享提取码（无码时为空）
-                            Fid = item.Fid, Token = item.Token,
-                            FromShare = item.FromShare, RelDir = item.RelDir ?? "",
-                            Dest = dest, Size = item.Size,
-                        },
-                    });
-                }
+                var jobs = BuildJobs(items, alloc, UiCtx(), _settings.OutDir);
                 if (jobs.Count == 0)
                 {
                     Log("没有取得直链（分享者可能关闭直链或游客额度限制）");
@@ -1968,7 +2145,75 @@ namespace GeZi
             }
         }
 
-        private async Task<List<ShareFileItem>> CollectFilesAsync(IEnumerable<ShareFileItem> items, string relPrefix, int depth)
+        /// <summary>
+        /// 把取链所需的一切界面状态收敛成一个参数对象 ——
+        /// UI 路径由 <see cref="UiCtx"/> 从界面字段现取，本地 API 则自己拼一份
+        /// （API 调用不改动界面上的"当前分享"状态，两条链路互不干扰）。
+        /// </summary>
+        private sealed class ShareCtx
+        {
+            public string PwdId = "";
+            public string Stoken = "";
+            public string Passcode = "";
+            public bool ShareMode = true;
+        }
+
+        /// <summary>当前界面上下文的分享状态快照。</summary>
+        private ShareCtx UiCtx() => new ShareCtx
+        {
+            PwdId = _pwdId ?? "",
+            Stoken = _stoken ?? "",
+            Passcode = PassBox.Text ?? "",
+            ShareMode = ShareMode,
+        };
+
+        /// <summary>
+        /// 把取到直链的条目装配成 DownloadJob 列表（UI 与本地 API 共用同一套字段约定）。
+        /// <paramref name="destRoot"/>：目标根目录（UI 传 _settings.OutDir，API 可指定别的）。
+        /// <paramref name="writeModeOverride"/>：非空时覆盖全局设置的写入方式（API 的 streamPlay 参数用）。
+        /// </summary>
+        private List<DownloadJob> BuildJobs(List<DownloadItem> items, int[] alloc,
+            ShareCtx ctx, string destRoot, WriteMode? writeModeOverride = null)
+        {
+            var jobs = new List<DownloadJob>();
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                string destDir = Path.Combine(destRoot, item.RelDir ?? "");
+                try { Directory.CreateDirectory(destDir); }
+                catch (Exception ex) { Log("创建下载目录失败: " + destDir + " — " + ex.Message); continue; }
+                string dest = PathUtil.UniquePath(Path.Combine(destDir, PathUtil.SanitizeFileName(item.Name)));
+                var it = item;   // 闭包捕获：每次循环一个新变量，避免所有回调指向同一个
+                var shareCtx = ctx;
+                jobs.Add(new DownloadJob
+                {
+                    Name = it.Name, Url = it.Url, Dest = dest,
+                    Cookie = _client.CookieStr,
+                    Threads = i < alloc.Length ? alloc[i] : _settings.Threads,
+                    WriteMode = writeModeOverride ?? _settings.WriteMode,
+                    // 分片根目录：留空 = 与目标同级（默认）。非空则分片集中存放，
+                    // 下载目录不被 .qparts 污染，也支持分片跨盘（如放 SSD）。
+                    PartsRoot = string.IsNullOrWhiteSpace(_settings.PartsRoot) ? null : _settings.PartsRoot,
+                    // 直链带时效签名，长任务下到一半会过期。
+                    // 给下载器一个"重新取链"的口子，它就能自动换链续传，而不是整个任务失败。
+                    LinkRefresher = ct => RefreshLinkAsync(it, ct, shareCtx),
+                    // 免转存（从分享直接取链）→ 续传取不到新链，失败文案别承诺"可续传"
+                    ResumeCannotRefresh = it.FromShare,
+                    // 续传上下文：写进「未完成任务」记录后，程序重启也能重取链接着下。
+                    Pending = new PendingInfo
+                    {
+                        PwdId = ctx.PwdId, Stoken = ctx.Stoken,
+                        Passcode = ctx.Passcode,   // 分享提取码（无码时为空）
+                        Fid = it.Fid, Token = it.Token,
+                        FromShare = it.FromShare, RelDir = it.RelDir ?? "",
+                        Dest = dest, Size = it.Size,
+                    },
+                });
+            }
+            return jobs;
+        }
+
+        private async Task<List<ShareFileItem>> CollectFilesAsync(IEnumerable<ShareFileItem> items, string relPrefix, int depth, ShareCtx ctx)
         {
             var result = new List<ShareFileItem>();
             foreach (var it in items)
@@ -1980,8 +2225,8 @@ namespace GeZi
                     List<QuarkFileEntry> children;
                     try
                     {
-                        children = ShareMode
-                            ? await _client.ShareDetailAsync(_pwdId, _stoken, it.Fid)
+                        children = ctx.ShareMode
+                            ? await _client.ShareDetailAsync(ctx.PwdId, ctx.Stoken, it.Fid)
                             : await _client.ListDirAsync(it.Fid);
                     }
                     catch
@@ -1992,7 +2237,7 @@ namespace GeZi
                     {
                         Fid = c.Fid, Name = c.Name, Size = c.Size, IsDir = c.IsDir, Token = c.Token,
                     }).ToList();
-                    var sub = await CollectFilesAsync(kids, Path.Combine(relPrefix, PathUtil.SanitizeFileName(it.Name)), depth + 1);
+                    var sub = await CollectFilesAsync(kids, Path.Combine(relPrefix, PathUtil.SanitizeFileName(it.Name)), depth + 1, ctx);
                     result.AddRange(sub);
                 }
                 else
@@ -2008,9 +2253,9 @@ namespace GeZi
         }
 
         private async Task<List<DownloadItem>> GetDownloadItemsAsync(List<ShareFileItem> files,
-            bool forceNoSave = false)
+            ShareCtx ctx, bool forceNoSave = false)
         {
-            if (ShareMode)
+            if (ctx.ShareMode)
             {
                 // 【2026-10-03】用户要求给「免转存下载」一个显式入口。
                 // 默认（登录状态下）走「转存→取直链」，会往用户网盘写一份；
@@ -2018,7 +2263,7 @@ namespace GeZi
                 if (forceNoSave)
                 {
                     Log("按你的选择走「免转存」路径：不写入网盘，直接从分享取链。");
-                    return await NoSaveGetItemsAsync(files);
+                    return await NoSaveGetItemsAsync(files, ctx);
                 }
 
                 bool loggedIn = !string.IsNullOrEmpty(_settings.Cookie);
@@ -2027,7 +2272,7 @@ namespace GeZi
                     Log("已登录，走「转存→取直链」路径（更稳定）");
                     try
                     {
-                        return await SaveAndGetItemsAsync(files);
+                        return await SaveAndGetItemsAsync(files, ctx);
                     }
                     catch (CapacityDowngradeException)
                     {
@@ -2035,13 +2280,13 @@ namespace GeZi
                         // （不写入网盘、直接从分享取链），而不是让整批任务失败。
                         // 这是很常见的场景：网盘满了但仍想下载公开分享。
                         Log("网盘容量不足，已自动改用「免转存」路径取直链（不写入网盘）。");
-                        return await NoSaveGetItemsAsync(files);
+                        return await NoSaveGetItemsAsync(files, ctx);
                     }
                 }
                 Log("未登录，走「免转存」路径（游客可能受额度限制）");
-                return await NoSaveGetItemsAsync(files);
+                return await NoSaveGetItemsAsync(files, ctx);
             }
-            return await DriveGetItemsAsync(files);
+            return await DriveGetItemsAsync(files, ctx);
         }
 
         /// <summary>
@@ -2053,10 +2298,10 @@ namespace GeZi
             public CapacityDowngradeException() : base("网盘容量不足") { }
         }
 
-        private async Task<List<DownloadItem>> NoSaveGetItemsAsync(List<ShareFileItem> files)
+        private async Task<List<DownloadItem>> NoSaveGetItemsAsync(List<ShareFileItem> files, ShareCtx ctx)
         {
             var targets = files.Select(f => new LinkTarget { Fid = f.Fid, Token = f.Token, Name = f.Name }).ToList();
-            var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: true);
+            var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: true, ctx);
             var items = new List<DownloadItem>();
             foreach (var f in files)
             {
@@ -2072,10 +2317,10 @@ namespace GeZi
             return items;
         }
 
-        private async Task<List<DownloadItem>> DriveGetItemsAsync(List<ShareFileItem> files)
+        private async Task<List<DownloadItem>> DriveGetItemsAsync(List<ShareFileItem> files, ShareCtx ctx)
         {
             var targets = files.Select(f => new LinkTarget { Fid = f.Fid, Name = f.Name }).ToList();
-            var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: false);
+            var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: false, ctx);
             var items = new List<DownloadItem>();
             foreach (var f in files)
             {
@@ -2091,7 +2336,7 @@ namespace GeZi
             return items;
         }
 
-        private async Task<List<DownloadItem>> SaveAndGetItemsAsync(List<ShareFileItem> files)
+        private async Task<List<DownloadItem>> SaveAndGetItemsAsync(List<ShareFileItem> files, ShareCtx ctx)
         {
             var items = new List<DownloadItem>();
             string toFid = await EnsureFolderAsync(QuarkConstants.DefaultFolder);
@@ -2109,7 +2354,7 @@ namespace GeZi
                 List<string> newFids;
                 try
                 {
-                    newFids = await _client.SaveShareAndGetFidsAsync(fids, tokens, toFid, _pwdId, _stoken);
+                    newFids = await _client.SaveShareAndGetFidsAsync(fids, tokens, toFid, ctx.PwdId, ctx.Stoken);
                 }
                 catch (QuarkApiException ex) when (QuarkClient.IsCapacityMessage(ex.Message))
                 {
@@ -2138,7 +2383,7 @@ namespace GeZi
                             Name = j < batch.Count ? batch[j].Name : newFids[j],
                         });
                     }
-                    var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: false);
+                    var urlOf = await FetchUrlsWithRetryAsync(targets, fromShare: false, ctx);
 
                     for (int j = 0; j < newFids.Count && j < batch.Count; j++)
                     {
@@ -2176,7 +2421,7 @@ namespace GeZi
         ///  2. **多一轮"逐个单请求"兜底**。批量接口更易被限流，剩少量文件时逐个问成功率更高。
         /// </summary>
         private async Task<Dictionary<string, string>> FetchUrlsWithRetryAsync(
-            List<LinkTarget> targets, bool fromShare)
+            List<LinkTarget> targets, bool fromShare, ShareCtx ctx)
         {
             var urls = new Dictionary<string, string>();
             var pending = new List<LinkTarget>(targets);
@@ -2210,7 +2455,7 @@ namespace GeZi
                     var batch = pending.Skip(i).Take(20).ToList();
                     List<DownloadLink> links = null;
                     string err = null;
-                    try { links = await FetchBatchAsync(batch, fromShare); }
+                    try { links = await FetchBatchAsync(batch, fromShare, ctx); }
                     catch (Exception ex) { err = ex.Message; }
                     if (err != null)
                     {
@@ -2256,7 +2501,7 @@ namespace GeZi
                     await Task.Delay(150);
                     try
                     {
-                        var one = await FetchBatchAsync(new List<LinkTarget> { t }, fromShare);
+                        var one = await FetchBatchAsync(new List<LinkTarget> { t }, fromShare, ctx);
                         var hit = one == null ? null : one.FirstOrDefault(l => !string.IsNullOrEmpty(l.DownloadUrl));
                         if (hit != null)
                         {
@@ -2297,14 +2542,14 @@ namespace GeZi
             return urls;
         }
 
-        private Task<List<DownloadLink>> FetchBatchAsync(List<LinkTarget> batch, bool fromShare)
+        private Task<List<DownloadLink>> FetchBatchAsync(List<LinkTarget> batch, bool fromShare, ShareCtx ctx)
         {
             if (fromShare)
             {
                 return _client.GetShareDownloadAsync(
                     batch.Select(t => t.Fid).ToList(),
                     batch.Select(t => t.Token ?? "").ToList(),
-                    _pwdId, _stoken);
+                    ctx.PwdId, ctx.Stoken);
             }
             return _client.GetDownloadAsync(batch.Select(t => t.Fid).ToList());
         }
@@ -2313,7 +2558,7 @@ namespace GeZi
         /// 重新获取某个文件的直链。下载中直链签名过期时由下载器回调触发。
         /// 按这个文件当初走的是哪条路径取链（分享免转存 / 我的网盘），保证刷新方式一致。
         /// </summary>
-        private async Task<string> RefreshLinkAsync(DownloadItem item, CancellationToken ct)
+        private async Task<string> RefreshLinkAsync(DownloadItem item, CancellationToken ct, ShareCtx ctx)
         {
             if (item == null || string.IsNullOrEmpty(item.Fid))
                 return null;
@@ -2330,7 +2575,7 @@ namespace GeZi
                 links = await _client.GetShareDownloadAsync(
                     new List<string> { item.Fid },
                     new List<string> { item.Token ?? "" },
-                    _pwdId, _stoken);
+                    ctx.PwdId, ctx.Stoken);
             }
             else
             {
@@ -4305,6 +4550,10 @@ namespace GeZi
                 PartsRootBox.Text = _settings.PartsRoot ?? "";
                 HidePartsCheck.IsChecked = _settings.HideParts;
                 CloseActionBox.SelectedIndex = (int)_settings.OnCloseButton;
+                // 本地 API：开关/端口/token 回填（token 只读不回写，启动时已自动生成）
+                ApiEnableCheck.IsChecked = _settings.ApiEnabled;
+                ApiPortBox.Text = _settings.ApiPort.ToString();
+                ApiTokenBox.Text = _settings.ApiToken ?? "";
                 // 外观主题：把配置里的选择回填到三个单选（_applyingSettings 已挡掉 Checked）
                 SyncThemeRadios();
             }
@@ -4469,8 +4718,17 @@ namespace GeZi
                 _settings.OnCloseButton = (CloseAction)Math.Max(0,
                     Math.Min(2, CloseActionBox.SelectedIndex));
 
+                // 本地 API：开关/端口/token 任一变化都重启监听。
+                // token 清空后保存 → StartApiServer 会重新生成一个随机值。
+                _settings.ApiEnabled = ApiEnableCheck.IsChecked == true;
+                int apiPort;
+                if (int.TryParse((ApiPortBox.Text ?? "").Trim(), out apiPort) && apiPort > 0 && apiPort <= 65535)
+                    _settings.ApiPort = apiPort;
+                _settings.ApiToken = (ApiTokenBox.Text ?? "").Trim();
+
                 SettingsStore.Save(_settings);
                 RecreateScheduler();
+                RestartApiServer();
 
                 Log(string.Format("设置已生效（单文件并发 {0} 路，同时下载 {1} 个）", threads, conc));
             }
