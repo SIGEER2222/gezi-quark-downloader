@@ -1,5 +1,9 @@
 # 鸽子下载（GeZi）
 
+> ⚠️ **本仓库是 Fork**：基于 [huaotem-bot/gezi-quark-downloader](https://github.com/huaotem-bot/gezi-quark-downloader)
+> v2.2.0（commit `5e8bcce`，GPL-3.0，作者 Yi Yuan）修改而来，功能与缺陷责任均与本 Fork 作者相关，
+> 使用问题请先看上游说明。改动清单见下方「🍴 本 Fork 改了什么」。
+
 > 一个 Windows 桌面端的**夸克网盘下载器** —— 支持分享链接 / 网盘直链解析、
 > 多线程分片下载、边下边播、多账号管理、深色模式。
 > 基于 **.NET 8 + WPF** 开发（`upgrade-dotnet8` 分支，从 .NET Framework 4.8 升级而来；
@@ -16,6 +20,35 @@
   <img src="https://img.shields.io/github/license/huaotem-bot/gezi-quark-downloader?style=social" alt="License">
   <img src="https://img.shields.io/github/stars/huaotem-bot/gezi-quark-downloader?style=social" alt="Stars">
 </p>
+
+---
+
+## 🍴 本 Fork 改了什么
+
+全部改动在 `upgrade-dotnet8` 分支（基于上游 `main` @ v2.2.0）：
+
+### 1. 框架升级：.NET Framework 4.8 → .NET 8（`net8.0-windows`）
+- JSON：`JavaScriptSerializer` → 新增 `GeZi.Core/Support/JsonCompat.cs`（System.Text.Json，
+  输出对象图形状与旧版一致，业务代码零改动）
+- ZXing 固化 DLL 从 net48 版换为 **netstandard2.0 版**（net48 版在 .NET 8 上加载必失败）；
+  解码改走 `BarcodeReaderGeneric` + 自喂灰度亮度源（`QrDecoder.ToLuminanceSource`）
+- DPAPI / DataContractJsonSerializer / System.Drawing 改为 3 个微软官方 NuGet 小包
+  （打破了上游「零 NuGet」约定，这是本 Fork 唯一的构建期联网依赖）
+- Server GC 配置从 App.config 迁移到 csproj 属性
+- 已验证：构建零警告；启动 / 扫码登录 / DPAPI 登录态平移 / 网盘列表 / 二维码编解码往返全部通过
+
+### 2. 「我的网盘」浏览资源管理器化
+- 左侧**目录树侧栏**：懒加载（展开哪层请求哪层），仅「我的网盘」模式显示
+- **前进 / 后退**按钮：浏览历史按「分享链接 / 我的网盘」两个模式分别保存
+- 树与文件列表双向同步：列表进目录，树自动展开并选中对应节点
+
+### 3. 观感 Fluent 化
+- Win11（22H2+）**Mica 标题栏**，明暗随主题联动；旧系统自动回退原不透明样式
+- ToolTip 圆角主题化（右键菜单上游已是 Fluent 风格，未重复造）
+
+### 4. 本地 HTTP API（WIP，来自并行开发会话）
+- `127.0.0.1:17890` + Bearer token（自动生成、存于配置文件），供脚本 / AI 代理调用
+- 仍在开发中，接口不保证稳定，详见 `src/GeZi/LocalApiServer.cs` / `MainWindow.Api.cs`
 
 ---
 
@@ -51,7 +84,7 @@
 
 | 项 | 要求 |
 |---|---|
-| 操作系统 | **Windows 10 1903+ / Windows 11**（推荐）<br>Windows 8.1 / Windows 7 SP1 理论可用，需自行安装 .NET Framework 4.8 |
+| 操作系统 | **Windows 10 1607+ / Windows 11**（.NET 8 官方支持范围；Mica 标题栏需 Win11 22H2+，旧系统自动降级） |
 | 运行时 | **.NET Desktop Runtime 8.0**（x64，需自行安装） |
 | 播放器（可选） | **VLC** —— 仅边下边播功能需要 |
 | 架构 | x64 |
@@ -65,7 +98,8 @@
 
 ### 方式一：下载发行版（推荐）
 
-1. 从 [Releases](https://github.com/huaotem-bot/gezi-quark-downloader/releases) 下载 `GeZi-v2.2.0-win64.zip` 并解压到任意目录
+1. 从上游 [Releases](https://github.com/huaotem-bot/gezi-quark-downloader/releases) 下载 `GeZi-v2.2.0-win64.zip` 并解压到任意目录
+   （注意：上游发行包是 .NET Framework 4.8 版；本 Fork 的 .NET 8 改动请用下方源码构建）
 2. 双击 `GeZi.exe` 即可运行
 3. 若系统缺少 .NET Framework 4.8，Windows 会弹窗提示，按引导安装即可
 
@@ -82,7 +116,7 @@ cd GeZi
 dotnet build GeZi.slnx -c Release
 
 # 3. 运行
-src/GeZi/bin/Release/net48/GeZi.exe
+src/GeZi/bin/Release/net8.0-windows/GeZi.exe
 ```
 
 构建时需要联网还原 3 个微软官方小包（System.Drawing.Common 等）；
