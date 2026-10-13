@@ -19,7 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using System.Web.Script.Serialization;
+using GeZi.Core.Support;
 
 namespace GeZi.Core.Api
 {
@@ -681,8 +681,7 @@ namespace GeZi.Core.Api
                 int end = s.LastIndexOf('}');
                 if (start < 0 || end <= start) return null;
                 string json = s.Substring(start, end - start + 1);
-                var obj = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
-                    .DeserializeObject(json);
+                var obj = JsonCompat.Parse(json);
                 return obj as Dictionary<string, object>;
             }
             catch

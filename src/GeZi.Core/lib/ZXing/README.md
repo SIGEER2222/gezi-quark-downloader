@@ -12,7 +12,7 @@
 | 作者 | Michael Jahn |
 | 许可 | **Apache-2.0**（https://licenses.nuget.org/Apache-2.0） |
 | 项目地址 | https://github.com/micjahn/ZXing.Net/ |
-| 取用文件 | `lib/net48/zxing.dll` → `zxing.dll`（532 KB） |
+| 取用文件 | `lib/netstandard2.0/zxing.dll` → `zxing.dll`（514 KB，升级 .NET 8 时从 net48 版换为 netstandard2.0 版） |
 | 附带 | `zxing.xml`（XML 文档注释，IntelliSense 用，不参与编译） |
 
 > ⚠️ **文件名一律小写**。包内本来就是小写 `zxing.dll`，而
@@ -32,7 +32,7 @@ curl -sL -o zxing.nupkg \
 
 1. 保持「离线构建」：不需要网络还原、不依赖 NuGet 源可用性。
 2. 分发更简单：`ZXing.dll` 与 `GeZi.Core.dll` 同级复制到输出目录，不引入包还原这一环。
-3. 体积可控：net48 版是**单文件、零依赖**（不走 netstandard，不需要 `NETStandard.Library`）。
+3. 体积可控：netstandard2.0 版是**单文件、零依赖**。
 
 ## 用途
 

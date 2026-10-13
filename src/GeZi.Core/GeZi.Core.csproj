@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>GeZi.Core</AssemblyName>
@@ -14,14 +14,16 @@
          不加 → `C:\Users\<用户名>\Desktop\GeZi\src\...\GeZi.Core.pdb` 被写进 dll
          → 打包发给别人时泄漏本机用户名/目录（本轮实测发现）。详见 GeZi.csproj 里的说明。 -->
     <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <!-- FindServicePoint/BindIPEndPointDelegate 在 .NET 8 仍被 SocketsHttpHandler 支持，
+         只是打了过时标记；连接数预算与对端 IP 统计依赖它，暂不重写。 -->
+    <NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 零 NuGet 依赖，可离线编译：JSON 用框架自带 JavaScriptSerializer；HTTP 用 System.Net.Http -->
-    <Reference Include="System.Net.Http" />
-    <Reference Include="System.Web.Extensions" />
-    <!-- DPAPI（ProtectedData）加密 Cookie -->
-    <Reference Include="System.Security" />
+    <!-- 升级 .NET 8 后：JSON 用框架自带 System.Text.Json（见 Support/JsonCompat.cs）；
+         DPAPI（ProtectedData）与 System.Drawing 在 .NET 8 拆成了独立包。 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.14" />
   </ItemGroup>
 
   <ItemGroup>
@@ -32,13 +34,14 @@
       用户需要把图里的链接抠出来。解码要处理透视校正 + Reed-Solomon 纠错，
       自己写成本远高于编码（QrEncoder 那种），所以用成熟库。
 
-      【为什么不是 PackageReference】本项目约定「零 NuGet、离线可构建」。
-      因此把 net48 版 zxing.dll（532KB，单文件零依赖）固化进 lib/ZXing/，
-      用普通 Reference 引用 —— 任何机器 clone 下来直接 build，不需联网还原。
-      详见 lib/ZXing/README.md（含版本 / 许可 / 重新获取方式）。
+      【为什么不是 PackageReference】本项目尽量离线可构建：
+      把 zxing.dll（单文件零依赖）固化进 lib/ZXing/，
+      用普通 Reference 引用 —— 任何机器 clone 下来即可编译。
 
-      ⚠️ net48 下 ZXing 走 System.Drawing 路径，不需要任何 Bindings 包
-         （SkiaSharp / Windows.Compatibility 那些只对 .NET 5+ 必要）。
+      ⚠️ 升级 .NET 8 时换成了包内 lib/netstandard2.0 版（0.16.11）：
+         net48 版引用的是旧 "System.Drawing" 程序集，在 .NET 8 上加载会失败。
+         netstandard 版无 System.Drawing 绑定，解码改走 BarcodeReaderGeneric +
+         自喂灰度亮度源（见 Support/QrDecoder.cs ToLuminanceSource）。
       ⚠️ Private=true 确保 zxing.dll 被复制到输出目录（跟 GeZi.Core.dll 同级）。
       ⚠️ 这里的文件名**刻意用小写 zxing.dll**（与 <AssemblyName>ZXing</AssemblyName> 的大小写不同）：
          GeZi.exe 通过 ProjectReference 拿到它时，MSBuild 会按程序集名规范化成小写 —— 

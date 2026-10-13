@@ -1,10 +1,14 @@
-<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- Server GC / 并发 GC：原 net48 配在 App.config 的 <runtime> 里，
+         .NET 8 改由 csproj 属性写入 runtimeconfig.json（App.config 已删）。 -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>GeZi</AssemblyName>
@@ -26,6 +30,8 @@
          本机 VS 调试照常（.pdb 仍在 bin 下），只是别人看到的是 `/_/`。
          （等价于 C++ 的 /pathmap，.NET 从 Roslyn 起支持。） -->
     <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <!-- MainWindow 里下载 VLC 用的一次性 WebClient：过时标记同 Core，行为在 .NET 8 不变。 -->
+    <NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,9 +48,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 零 NuGet：JSON 用框架自带的 DataContractJsonSerializer（历史记录/未完成任务持久化）。
-         不要引 System.Web.Extensions —— 它依赖 System.Web，会让 WPF 的 XAML 编译器报 MC1000。 -->
-    <Reference Include="System.Runtime.Serialization" />
+    <!-- 历史记录/未完成任务持久化用 DataContractJsonSerializer，.NET 8 起为独立包。 -->
+    <PackageReference Include="System.Runtime.Serialization.Json" Version="4.3.0" />
   </ItemGroup>
 
 </Project>

@@ -20,6 +20,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using ZXing;
 using ZXing.Common;
 
@@ -201,7 +202,7 @@ namespace GeZi.Core.Support
         {
             try
             {
-                var reader = new BarcodeReader
+                var reader = new BarcodeReaderGeneric
                 {
                     // 只认需要的码制：范围越窄，误识别概率越低、速度越快
                     Options = new DecodingOptions
@@ -214,7 +215,7 @@ namespace GeZi.Core.Support
                     AutoRotate = true,
                 };
 
-                var res = reader.Decode(bmp);
+                var res = reader.Decode(ToLuminanceSource(bmp));
                 if (res == null || string.IsNullOrEmpty(res.Text)) return null;
 
                 return new Result
@@ -228,6 +229,38 @@ namespace GeZi.Core.Support
             catch
             {
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 32bppArgb 位图 → 灰度亮度源（ITU-R BT.601 luma 定点近似）。
+        /// netstandard 版 ZXing 不带 System.Drawing 绑定，自己喂像素反而少一次拷贝。
+        /// </summary>
+        private static LuminanceSource ToLuminanceSource(Bitmap bmp)
+        {
+            var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                int w = data.Width, h = data.Height, stride = data.Stride;
+                byte[] buf = new byte[stride * h];
+                Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+
+                byte[] gray = new byte[w * h];
+                for (int y = 0; y < h; y++)
+                {
+                    int row = y * stride, drow = y * w;
+                    for (int x = 0; x < w; x++)
+                    {
+                        int i = row + x * 4;   // BGRA
+                        gray[drow + x] = (byte)((buf[i] * 19595 + buf[i + 1] * 38470 + buf[i + 2] * 7471 + 0x8000) >> 16);
+                    }
+                }
+                return new RGBLuminanceSource(gray, w, h, RGBLuminanceSource.BitmapFormat.Gray8);
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
             }
         }
 

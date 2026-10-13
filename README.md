@@ -2,7 +2,10 @@
 
 > 一个 Windows 桌面端的**夸克网盘下载器** —— 支持分享链接 / 网盘直链解析、
 > 多线程分片下载、边下边播、多账号管理、深色模式。
-> 基于 **.NET Framework 4.8 + WPF** 开发，**零 NuGet 依赖、可完全离线构建**。
+> 基于 **.NET 8 + WPF** 开发（`upgrade-dotnet8` 分支，从 .NET Framework 4.8 升级而来；
+> 上游主线仍为 net48）。构建需联网还原 3 个小体积官方包
+> （System.Drawing.Common / System.Security.Cryptography.ProtectedData / System.Runtime.Serialization.Json），
+> ZXing 依旧以固化 DLL 随仓库分发（netstandard2.0 版）。
 
 <p align="center">
   <img src="src/GeZi/Resources/app-logo.png" width="120" alt="鸽子下载">
@@ -49,12 +52,12 @@
 | 项 | 要求 |
 |---|---|
 | 操作系统 | **Windows 10 1903+ / Windows 11**（推荐）<br>Windows 8.1 / Windows 7 SP1 理论可用，需自行安装 .NET Framework 4.8 |
-| 运行时 | **.NET Framework 4.8**（Win10 1903 起系统内置） |
+| 运行时 | **.NET Desktop Runtime 8.0**（x64，需自行安装） |
 | 播放器（可选） | **VLC** —— 仅边下边播功能需要 |
 | 架构 | x64 |
 
 > ⚠️ **本软件仅支持 Windows**，不支持 Linux / macOS。
-> （UI 基于 WPF、运行时为 .NET Framework，两者均为 Windows 独占。）
+> （UI 基于 WPF，运行时为 Windows Desktop，两者均为 Windows 独占。）
 
 ---
 
@@ -82,8 +85,9 @@ dotnet build GeZi.slnx -c Release
 src/GeZi/bin/Release/net48/GeZi.exe
 ```
 
-**无需 `nuget restore`** —— 本项目零 NuGet 依赖，所有第三方库以固化 DLL 形式随仓库分发，
-任何机器 clone 下来即可直接构建（需已安装 .NET Framework 4.8 开发包 / MSBuild）。
+构建时需要联网还原 3 个微软官方小包（System.Drawing.Common 等）；
+ZXing 仍以固化 DLL 形式随仓库分发（`lib/ZXing/`，netstandard2.0 版）。
+clone 后执行 `dotnet build` 即可（需 .NET 8 SDK）。
 
 ---
 
